@@ -1,32 +1,14 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-from statsmodels.tsa.stattools import adfuller, kpss
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-from statsmodels.tsa.seasonal import STL
 import statsmodels.api as sm
-from statsmodels.stats.stattools import durbin_watson
 import itertools
 import warnings
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
-from statsmodels.stats.diagnostic import acorr_ljungbox
-from scipy.stats import shapiro
-from statsmodels.stats.diagnostic import het_arch
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-
-#import des données
-
-data=pd.read_csv("velib_horaire.csv")
-data["Departure_Time"]= pd.to_datetime(data["Departure_Time"])
-data = data.sort_values("Departure_Time").set_index("Departure_Time")
-Y_trajet=data["nombre_trajets"].dropna() # extration du processus stationnaire à étudier
-Y_elec=data["proportion_velos_electriques"].dropna()
-Y_duree=data["duree_moyenne_sec"].dropna()
-
 
 def etude_complete(Y):
     #aperçue de Yt
-
     plt.figure(figsize=(12, 5))
     plt.plot(Y)
     plt.title(f"Graphique A: Série temporelle {Y.name}")
@@ -35,19 +17,9 @@ def etude_complete(Y):
     plt.grid(True)
     plt.show()
 
-    # test d'une tendance polynomiale de degré 3
-    t = np.arange(len(Y))
-    X = sm.add_constant(np.column_stack([t, t**2,t**3]))
-    mod = sm.OLS(Y.values, X).fit()
-    print(mod.summary())
-
-    # retrait de la tendance polynomiamle de degrès 1 par différentiation
-    y_sans_tendance = Y.diff(1).dropna()
-
-
-    #fonction d'autocorrélation de Y pour recherche de saisonnalité
+    #Affichage de l'ACF
     fig, ax = plt.subplots(figsize=(10,4))
-    plot_acf(Y, lags=24*21, ax=ax) 
+    plot_acf(Y, lags=24*21, ax=ax) #fonction d'autocorrélation de Y
 
     # graduations : tous les multiples de 24
     xticks = np.arange(0, 24*21 + 1, 24)
@@ -65,16 +37,35 @@ def etude_complete(Y):
 
     plt.show()
 
+    # test d'une tendance polynomiale de degré 3
+    t = np.arange(len(Y))
+    X = sm.add_constant(np.column_stack([t, t**2,t**3]))
+    mod = sm.OLS(Y.values, X).fit()
 
-    # retrait de la saisonnalité
+    # retrait de la tendance polynomiale de degrès k par différentiation
+    # récupération du plus haut degré significatif k
+    pvalues = mod.pvalues[1:]   # on enlève la constante
+    degres_significatifs = [i+1 for i, p in enumerate(pvalues) if p < 0.05]
 
+    if len(degres_significatifs) == 0:
+        k = 0
+        y_sans_tendance = Y.copy()
+    else:
+        k = max(degres_significatifs)
+        y_sans_tendance = Y.copy()
+        
+        for i in range(k + 1):
+            y_sans_tendance = y_sans_tendance.diff()
+
+        y_sans_tendance = y_sans_tendance.dropna()
+
+    # retrait de la saisonnalité supposée de periode 24 et 168
     Y_diff24 = y_sans_tendance.diff(24)
     Y_diff168= Y_diff24.diff(168)
     Y_model= Y_diff168.dropna()
 
-
-    #vérifier la stationnarité de la serie finale avec ACF
-
+    #vérifier stationnarité et ACF
+    print("-------------------------------Pertinence d'un modèle ARMA aprés stationnarisation-------------------------------")
     plt.figure(figsize=(12, 5))
     plt.plot(Y_model)
 
@@ -125,45 +116,16 @@ def etude_complete(Y):
 
     df_resultats = pd.DataFrame(resultats)
     df_resultats = df_resultats.sort_values("AIC").reset_index(drop=True)
-
-    print("Tableau des modèles classés par AIC :")
-    print(df_resultats)
-
     p_opt = int(df_resultats.loc[0, "p"])
     q_opt = int(df_resultats.loc[0, "q"])
     modele_opt = df_resultats.loc[0, "modele"]
     aic_opt = df_resultats.loc[0, "AIC"]
-
+    print("------------------------------------ajustement d'un modèle ARMA------------------------------------")
     print("Meilleur modèle retenu :", modele_opt)
     print("AIC =", aic_opt)
 
     res_final = sm.tsa.ARIMA(Y_model, order=(p_opt, 0, q_opt)).fit()
     print(res_final.summary())
-
-
-    #analyse des résidus
-
-    residus = res_final.resid
-
-    # tests
-    ljung = acorr_ljungbox(residus, lags=[10], return_df=True)
-    shap_stat, shap_p = shapiro(residus)
-
-    #  tableau des résultats des tests
-    df_tests = pd.DataFrame({
-        "Test": ["Ljung-Box", "Shapiro-Wilk"],
-        "Statistique": [
-            round(ljung["lb_stat"].values[0], 2),
-            round(shap_stat, 2)
-        ],
-        "p-value": [
-            round(ljung["lb_pvalue"].values[0], 2),
-            round(shap_p, 2)
-        ]
-    })
-
-    print(df_tests)
-
 
     #performance du modèle en prévision
 
@@ -182,7 +144,7 @@ def etude_complete(Y):
     #comparaison avec les données de test
     mae = mean_absolute_error(test, pred)
     rmse = np.sqrt(mean_squared_error(test, pred))
-
+    print("------------------------------------------Performances en prévision-------------------------------------")
     print("MAE :", mae)
     print("RMSE :", rmse)
 
@@ -191,6 +153,6 @@ def etude_complete(Y):
     plt.plot(test.index, pred, label="Prévisions", linestyle="--")
     plt.legend()
     plt.title(f"Prévisions {modele_opt} des données de test")
-    #plt.show()
+    plt.show()
+    
 
-etude_complete(Y_duree)
